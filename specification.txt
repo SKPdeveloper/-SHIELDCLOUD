@@ -1,0 +1,963 @@
+================================================================================
+  СПЕЦИФІКАЦІЯ ПРОЕКТУ
+  "ShieldCloud — Система захисту даних у хмарних обчисленнях"
+  
+  Версія: 1.0
+  Дата: 13.02.2026
+================================================================================
+
+
+1. ЗАГАЛЬНИЙ ОПИС
+================================================================================
+
+Проект являє собою повнофункціональну веб-систему для безпечного зберігання,
+шифрування та моніторингу файлів у хмарному середовищі. Система демонструє
+реальні механізми захисту даних: подвійне шифрування, контроль доступу на основі
+ролей (RBAC), перевірку цілісності файлів, аудит-логування та моніторинг загроз.
+
+Замість реального AWS-акаунту використовується LocalStack — повний локальний
+емулятор сервісів Amazon Web Services, який працює у Docker-контейнері та
+надає ідентичний API через бібліотеку boto3. Це дозволяє розгорнути всю
+інфраструктуру локально однією командою без реєстрації та оплати.
+
+
+2. АРХІТЕКТУРА СИСТЕМИ
+================================================================================
+
+2.1. Загальна схема
+─────────────────────────────────────────────────────────────────────────────────
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                        Docker Compose                          │
+  │                                                                │
+  │  ┌──────────────┐   ┌──────────────┐   ┌───────────────────┐  │
+  │  │   Frontend    │   │   Backend    │   │    LocalStack     │  │
+  │  │  (React SPA)  │──▶│  (Flask API) │──▶│  (AWS Emulator)   │  │
+  │  │   nginx:80    │   │  port:5000   │   │   port:4566       │  │
+  │  └──────────────┘   └──────┬───────┘   │                   │  │
+  │                            │           │  ┌─────────────┐  │  │
+  │                            │           │  │     S3      │  │  │
+  │                            │           │  │  (бакети)   │  │  │
+  │                       ┌────┴────┐      │  ├─────────────┤  │  │
+  │                       │ SQLite  │      │  │    KMS      │  │  │
+  │                       │  (БД)   │      │  │  (ключі)   │  │  │
+  │                       └─────────┘      │  ├─────────────┤  │  │
+  │                                        │  │ CloudWatch  │  │  │
+  │                                        │  │   (логи)    │  │  │
+  │                                        │  └─────────────┘  │  │
+  │                                        └───────────────────┘  │
+  └─────────────────────────────────────────────────────────────────┘
+
+2.2. Контейнери
+─────────────────────────────────────────────────────────────────────────────────
+
+  Контейнер       Образ                    Порт    Призначення
+  ──────────────  ───────────────────────   ─────   ─────────────────────────
+  localstack      localstack/localstack     4566    Емуляція AWS S3, KMS,
+                                                    CloudWatch
+  backend         python:3.12-slim         5000    Flask API сервер
+  frontend        node:20 + nginx          3000    React SPA додаток
+
+2.3. Технологічний стек
+─────────────────────────────────────────────────────────────────────────────────
+
+  Компонент         Технологія               Версія
+  ────────────────  ───────────────────────   ────────
+  Frontend          React                    18.x
+  Збірка            Vite                     5.x
+  UI-бібліотека     Tailwind CSS             3.x
+  Графіки           Recharts                 2.x
+  HTTP-клієнт       Axios                    1.x
+  Backend           Python + Flask           3.12 / 3.x
+  ORM               SQLAlchemy               2.x
+  Міграції          Flask-Migrate            4.x
+  Автентифікація    Flask-JWT-Extended       4.x
+  AWS SDK           boto3                    1.x
+  Шифрування        cryptography (Python)    42.x
+  Хешування         hashlib (stdlib)         —
+  База даних        SQLite                   3.x
+  Контейнеризація   Docker + Docker Compose  24.x / 2.x
+  AWS-емуляція      LocalStack               3.x
+
+
+3. СТРУКТУРА ПРОЕКТУ
+================================================================================
+
+  shieldcloud/
+  │
+  ├── docker-compose.yml              # Оркестрація всіх контейнерів
+  ├── .env                            # Змінні середовища
+  ├── README.md                       # Інструкція з розгортання
+  │
+  ├── localstack/
+  │   └── init-aws.sh                 # Ініціалізація S3 бакетів, KMS ключів
+  │
+  ├── backend/
+  │   ├── Dockerfile                  # Образ Python-додатку
+  │   ├── requirements.txt            # Залежності pip
+  │   ├── app/
+  │   │   ├── __init__.py             # Фабрика Flask-додатку
+  │   │   ├── config.py               # Конфігурація (S3 endpoint, ключі)
+  │   │   ├── models/
+  │   │   │   ├── __init__.py
+  │   │   │   ├── user.py             # Модель користувача
+  │   │   │   ├── file_meta.py        # Метадані файлів
+  │   │   │   ├── audit_log.py        # Аудит-записи
+  │   │   │   └── threat_event.py     # Записи загроз
+  │   │   ├── services/
+  │   │   │   ├── __init__.py
+  │   │   │   ├── auth_service.py     # Логіка автентифікації/авторизації
+  │   │   │   ├── crypto_service.py   # Шифрування/дешифрування (KMS + AES)
+  │   │   │   ├── storage_service.py  # Робота з S3 (upload/download/delete)
+  │   │   │   ├── integrity_service.py# Хешування та перевірка цілісності
+  │   │   │   ├── audit_service.py    # Запис аудит-логів
+  │   │   │   └── threat_service.py   # Аналіз та моніторинг загроз
+  │   │   ├── routes/
+  │   │   │   ├── __init__.py
+  │   │   │   ├── auth.py             # /api/auth/*
+  │   │   │   ├── files.py            # /api/files/*
+  │   │   │   ├── audit.py            # /api/audit/*
+  │   │   │   ├── threats.py          # /api/threats/*
+  │   │   │   └── users.py            # /api/users/*
+  │   │   ├── middleware/
+  │   │   │   ├── __init__.py
+  │   │   │   ├── rbac.py             # Перевірка прав доступу за роллю
+  │   │   │   └── threat_detector.py  # Аналіз запитів на підозрілість
+  │   │   └── utils/
+  │   │       ├── __init__.py
+  │   │       └── helpers.py          # Допоміжні функції
+  │   └── migrations/                 # Алembic міграції
+  │
+  └── frontend/
+      ├── Dockerfile                  # Образ React-додатку
+      ├── nginx.conf                  # Конфігурація nginx + proxy на backend
+      ├── package.json
+      ├── vite.config.js
+      ├── index.html
+      └── src/
+          ├── main.jsx                # Точка входу
+          ├── App.jsx                 # Маршрутизація
+          ├── api/
+          │   └── client.js           # Axios інстанс з JWT interceptor
+          ├── context/
+          │   └── AuthContext.jsx      # React Context для автентифікації
+          ├── pages/
+          │   ├── LoginPage.jsx       # Сторінка входу/реєстрації
+          │   ├── DashboardPage.jsx   # Головна панель
+          │   ├── FilesPage.jsx       # Файл-менеджер
+          │   ├── AuditPage.jsx       # Аудит-логи
+          │   ├── ThreatsPage.jsx     # Моніторинг загроз
+          │   └── UsersPage.jsx       # Управління користувачами (Admin)
+          ├── components/
+          │   ├── FileUpload.jsx      # Компонент завантаження з клієнтським шифруванням
+          │   ├── FileList.jsx        # Таблиця файлів з діями
+          │   ├── IntegrityCheck.jsx  # Перевірка цілісності
+          │   ├── ThreatChart.jsx     # Графіки загроз (Recharts)
+          │   ├── AuditTable.jsx      # Таблиця аудит-логів з фільтрами
+          │   ├── RoleMatrix.jsx      # Матриця прав RBAC
+          │   └── SecurityScore.jsx   # Оцінка безпеки системи
+          └── utils/
+              └── crypto.js           # Web Crypto API (AES-256-GCM клієнтське шифрування)
+
+
+4. МОДУЛІ СИСТЕМИ — ДЕТАЛЬНИЙ ОПИС
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+4.1. МОДУЛЬ АВТЕНТИФІКАЦІЇ ТА АВТОРИЗАЦІЇ
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Контроль доступу до системи на основі ролей (RBAC).
+
+  4.1.1. Реєстрація користувача
+  ─────────────────────────────
+  Endpoint:   POST /api/auth/register
+  Тіло:       { "username": str, "email": str, "password": str }
+  Логіка:
+    1. Валідація вхідних даних (довжина пароля >= 8, формат email)
+    2. Перевірка унікальності username та email у БД
+    3. Хешування пароля: bcrypt з salt rounds = 12
+    4. Створення запису в таблиці users з роллю "guest" за замовчуванням
+    5. Запис події в аудит-лог: "USER_REGISTERED"
+    6. Повернення JWT access_token (15 хв) та refresh_token (7 днів)
+  Відповідь:   { "access_token": str, "refresh_token": str, "user": {...} }
+
+  4.1.2. Вхід у систему
+  ─────────────────────
+  Endpoint:   POST /api/auth/login
+  Тіло:       { "username": str, "password": str }
+  Логіка:
+    1. Пошук користувача за username
+    2. Перевірка bcrypt хешу пароля
+    3. Якщо невдала спроба:
+       а) Інкремент лічильника failed_login_attempts у БД
+       б) Запис події "LOGIN_FAILED" в аудит-лог
+       в) Передача інформації в threat_detector (IP, час, username)
+       г) Якщо failed_login_attempts >= 5 → блокування акаунту на 30 хвилин
+    4. Якщо успішна спроба:
+       а) Скидання лічильника failed_login_attempts
+       б) Оновлення поля last_login_at
+       в) Генерація JWT пари (access + refresh)
+       г) Запис події "LOGIN_SUCCESS" в аудит-лог
+  Відповідь:   { "access_token": str, "refresh_token": str, "user": {...} }
+  Помилки:     401 (невірні дані), 423 (акаунт заблоковано)
+
+  4.1.3. Оновлення токена
+  ───────────────────────
+  Endpoint:   POST /api/auth/refresh
+  Заголовок:  Authorization: Bearer <refresh_token>
+  Логіка:     Валідація refresh_token → генерація нового access_token
+  Відповідь:  { "access_token": str }
+
+  4.1.4. Матриця прав доступу (RBAC)
+  ──────────────────────────────────
+
+  Дія                          Admin    User     Guest
+  ───────────────────────────   ─────    ─────    ─────
+  Завантаження файлів           ✓        ✓        ✗
+  Скачування своїх файлів       ✓        ✓        ✗
+  Скачування чужих файлів       ✓        ✗        ✗
+  Видалення своїх файлів        ✓        ✓        ✗
+  Видалення чужих файлів        ✓        ✗        ✗
+  Перегляд публічних файлів     ✓        ✓        ✓
+  Перевірка цілісності          ✓        ✓        ✗
+  Перегляд аудит-логів          ✓        ✗        ✗
+  Перегляд загроз               ✓        ✗        ✗
+  Управління користувачами      ✓        ✗        ✗
+  Зміна ролей                   ✓        ✗        ✗
+  Блокування акаунтів           ✓        ✗        ✗
+
+  Реалізація: Декоратор @require_role("admin", "user") на Flask-роутах.
+  Middleware rbac.py перехоплює кожен запит, витягує роль з JWT і
+  перевіряє дозвіл перед виконанням обробника.
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.2. МОДУЛЬ ШИФРУВАННЯ
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Подвійне шифрування файлів — на клієнті та на сервері.
+
+  4.2.1. Клієнтське шифрування (Web Crypto API)
+  ──────────────────────────────────────────────
+  Виконується у браузері перед відправкою на сервер.
+
+  Алгоритм:    AES-256-GCM
+  Довжина ключа: 256 біт
+  IV:          12 байт (випадковий, генерується window.crypto.getRandomValues)
+  
+  Процес шифрування:
+    1. Користувач обирає файл через <input type="file">
+    2. Файл зчитується як ArrayBuffer через FileReader
+    3. Генерується випадковий AES-256 ключ:
+       window.crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt","decrypt"])
+    4. Генерується випадковий IV (12 байт)
+    5. Файл шифрується:
+       window.crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, key, fileBuffer)
+    6. Ключ експортується у raw формат для збереження
+    7. На сервер відправляється: зашифрований файл + IV (base64) + ключ (base64)
+    8. Ключ зберігається ТІЛЬКИ у localStorage браузера (сервер його не зберігає)
+
+  Процес дешифрування:
+    1. З сервера приходить зашифрований файл + IV
+    2. Ключ відновлюється з localStorage
+    3. window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, encryptedBuffer)
+    4. Розшифрований файл доступний для завантаження
+
+  4.2.2. Серверне шифрування (AWS KMS через LocalStack)
+  ────────────────────────────────────────────────────
+  Виконується на бекенді після отримання вже зашифрованого клієнтом файлу.
+
+  Процес:
+    1. При ініціалізації системи створюється KMS Master Key:
+       kms_client.create_key(Description="shieldcloud-master-key")
+    2. Для кожного файлу генерується унікальний Data Key:
+       kms_client.generate_data_key(KeyId=master_key_id, KeySpec="AES_256")
+       Повертає: { Plaintext: <data_key>, CiphertextBlob: <encrypted_data_key> }
+    3. Файл (вже зашифрований клієнтом) додатково шифрується Data Key:
+       Fernet(base64(data_key)).encrypt(client_encrypted_data)
+    4. В S3 зберігається: двічі зашифрований файл
+    5. В БД зберігається: encrypted_data_key (CiphertextBlob)
+    6. Plaintext Data Key видаляється з пам'яті
+
+  Процес дешифрування на сервері:
+    1. З БД читається encrypted_data_key
+    2. KMS розшифровує Data Key:
+       kms_client.decrypt(CiphertextBlob=encrypted_data_key)
+    3. Data Key використовується для дешифрування файлу:
+       Fernet(base64(plaintext_data_key)).decrypt(double_encrypted_data)
+    4. Результат — файл, зашифрований лише клієнтським ключем
+    5. Відправляється клієнту для фінального дешифрування
+
+  Схема шифрування:
+  
+    Оригінал → [AES-256-GCM клієнт] → [Fernet(KMS Data Key) сервер] → S3
+    S3 → [Fernet decrypt сервер] → [AES-256-GCM decrypt клієнт] → Оригінал
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.3. МОДУЛЬ ХМАРНОГО СХОВИЩА (S3)
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Збереження зашифрованих файлів у хмарному сховищі.
+
+  4.3.1. Ініціалізація (init-aws.sh)
+  ──────────────────────────────────
+  При старті контейнера localstack виконується скрипт:
+    - Створюється бакет: awslocal s3 mb s3://shieldcloud-files
+    - Вмикається версіонування: awslocal s3api put-bucket-versioning \
+        --bucket shieldcloud-files --versioning-configuration Status=Enabled
+    - Створюється KMS ключ: awslocal kms create-key
+    - Створюється alias: awslocal kms create-alias \
+        --alias-name alias/shieldcloud-key --target-key-id <key-id>
+    - Створюється лог-група CloudWatch: awslocal logs create-log-group \
+        --log-group-name /shieldcloud/audit
+
+  4.3.2. Завантаження файлу
+  ─────────────────────────
+  Endpoint:   POST /api/files/upload
+  Заголовок:  Authorization: Bearer <access_token>
+  Content-Type: multipart/form-data
+  Поля:       file (бінарний), client_iv (base64), original_name (str),
+              is_public (bool, default: false)
+  
+  Логіка:
+    1. Middleware: перевірка ролі (admin або user)
+    2. Middleware: threat_detector аналізує запит
+    3. Обчислення SHA-256 хешу отриманих даних (client-encrypted)
+    4. Генерація KMS Data Key
+    5. Серверне шифрування отриманих даних
+    6. Генерація S3 ключа: {user_id}/{uuid4}/{original_name}.enc
+    7. Завантаження в S3:
+       s3_client.put_object(
+         Bucket="shieldcloud-files",
+         Key=s3_key,
+         Body=double_encrypted_data,
+         Metadata={
+           "original-name": original_name,
+           "client-iv": client_iv,
+           "upload-timestamp": iso_timestamp,
+           "owner-id": str(user_id)
+         }
+       )
+    8. Збереження метаданих у SQLite:
+       - id (UUID)
+       - user_id (FK → users)
+       - original_name
+       - s3_key
+       - s3_version_id
+       - encrypted_data_key (base64)
+       - client_iv (base64)
+       - sha256_hash (hex)
+       - file_size (bytes)
+       - is_public
+       - created_at
+       - updated_at
+    9. Аудит-лог: "FILE_UPLOADED"
+   10. Повернення метаданих файлу
+
+  Відповідь: {
+    "id": "uuid",
+    "original_name": "document.pdf",
+    "size": 1048576,
+    "sha256": "a1b2c3...",
+    "s3_version_id": "v1",
+    "encrypted": true,
+    "created_at": "2026-02-13T10:00:00Z"
+  }
+
+  4.3.3. Скачування файлу
+  ───────────────────────
+  Endpoint:   GET /api/files/<file_id>/download
+  Заголовок:  Authorization: Bearer <access_token>
+  
+  Логіка:
+    1. Перевірка прав: власник файлу або admin або (is_public && будь-яка роль)
+    2. Отримання метаданих з БД
+    3. Завантаження з S3: s3_client.get_object(Bucket, Key)
+    4. Серверне дешифрування через KMS
+    5. Повернення файлу (ще зашифрованого клієнтським ключем) + client_iv
+    6. Аудит-лог: "FILE_DOWNLOADED"
+
+  4.3.4. Видалення файлу
+  ──────────────────────
+  Endpoint:   DELETE /api/files/<file_id>
+  Логіка:
+    1. Перевірка прав: власник або admin
+    2. Видалення об'єкта з S3
+    3. Позначення запису в БД як видалений (soft delete: deleted_at = now())
+    4. Аудит-лог: "FILE_DELETED"
+
+  4.3.5. Список файлів
+  ────────────────────
+  Endpoint:   GET /api/files?page=1&per_page=20&sort=created_at&order=desc
+  Логіка:
+    - Admin: бачить всі файли
+    - User: бачить свої файли + публічні
+    - Guest: бачить тільки публічні
+  Відповідь: пагінований список з метаданими (без самих файлів)
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.4. МОДУЛЬ ПЕРЕВІРКИ ЦІЛІСНОСТІ
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Гарантія що файли в хмарі не були модифіковані або пошкоджені.
+
+  4.4.1. Перевірка одного файлу
+  ─────────────────────────────
+  Endpoint:   POST /api/files/<file_id>/verify
+  
+  Логіка:
+    1. Отримання метаданих файлу з БД (зокрема sha256_hash)
+    2. Завантаження файлу з S3 (без дешифрування)
+    3. Обчислення SHA-256 хешу завантажених даних
+    4. Порівняння з хешем з БД
+    5. Результат:
+       - MATCH → файл цілісний, статус "verified"
+       - MISMATCH → файл скомпрометований, статус "compromised"
+    6. Запис результату в аудит-лог: "INTEGRITY_CHECK"
+    7. Якщо MISMATCH → створення threat_event з severity "critical"
+
+  Відповідь: {
+    "file_id": "uuid",
+    "status": "verified" | "compromised",
+    "expected_hash": "a1b2c3...",
+    "actual_hash": "a1b2c3...",
+    "checked_at": "2026-02-13T10:00:00Z"
+  }
+
+  4.4.2. Масова перевірка
+  ──────────────────────
+  Endpoint:   POST /api/files/verify-all
+  Доступ:     Тільки admin
+  
+  Логіка:
+    1. Отримання всіх активних файлів з БД
+    2. Послідовна перевірка кожного файлу
+    3. Генерація звіту:
+       - Загальна кількість файлів
+       - Кількість перевірених (verified)
+       - Кількість скомпрометованих (compromised)
+       - Список скомпрометованих файлів з деталями
+    4. Аудит-лог: "BULK_INTEGRITY_CHECK"
+
+  Відповідь: {
+    "total": 150,
+    "verified": 148,
+    "compromised": 2,
+    "compromised_files": [
+      { "id": "uuid", "name": "report.pdf", "owner": "john" },
+      { "id": "uuid", "name": "data.csv", "owner": "jane" }
+    ],
+    "checked_at": "2026-02-13T10:00:00Z"
+  }
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.5. МОДУЛЬ МОНІТОРИНГУ ЗАГРОЗ
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Виявлення та реагування на підозрілу активність у системі.
+
+  4.5.1. Типи загроз що відстежуються
+  ────────────────────────────────────
+
+  Тип загрози                  Тригер                           Бали   Severity
+  ───────────────────────────   ──────────────────────────────   ─────  ────────
+  BRUTE_FORCE                  >= 5 невдалих логінів за 10 хв    25    high
+  UNAUTHORIZED_ACCESS          Спроба доступу без прав            10    medium
+  UNUSUAL_TIME_ACCESS          Запити між 02:00 та 05:00          5    low
+  RAPID_REQUESTS               > 100 запитів за хвилину           15    medium
+  INTEGRITY_VIOLATION          Хеш файлу не збігається            50    critical
+  MASS_DOWNLOAD                > 20 скачувань за 5 хвилин         20    high
+  FOREIGN_IP_ACCESS            Зміна IP під час сесії             10    medium
+  PRIVILEGE_ESCALATION         Спроба зміни своєї ролі            30    high
+  MASS_DELETE                  > 10 видалень за 5 хвилин          25    high
+
+  4.5.2. Механізм бальної системи
+  ───────────────────────────────
+  
+  Кожен користувач має threat_score (зберігається в Redis-like структурі в пам'яті).
+  
+  Процес:
+    1. Middleware threat_detector аналізує КОЖЕН вхідний HTTP-запит
+    2. Перевіряє умови для кожного типу загрози
+    3. Якщо тригер спрацьовує:
+       а) Додаються бали до threat_score користувача
+       б) Створюється запис threat_event у БД
+       в) Лог пишеться в CloudWatch (LocalStack)
+    4. Пороги реагування:
+       - threat_score >= 50  → Попередження (WARNING) в логах
+       - threat_score >= 80  → Обмеження rate limit до 10 запитів/хв
+       - threat_score >= 100 → Автоматичне блокування акаунту
+    5. threat_score зменшується на 1 бал кожні 10 хвилин (decay)
+
+  4.5.3. API загроз
+  ─────────────────
+
+  GET /api/threats?page=1&per_page=50&severity=high&from=2026-02-01&to=2026-02-13
+    Фільтрація за: severity, тип загрози, користувач, діапазон дат
+    Доступ: тільки admin
+
+  GET /api/threats/stats
+    Агреговані дані для дашборду:
+    {
+      "total_events_24h": 47,
+      "critical_events_24h": 2,
+      "blocked_accounts": 1,
+      "threat_by_type": {
+        "BRUTE_FORCE": 12,
+        "UNAUTHORIZED_ACCESS": 8,
+        ...
+      },
+      "threat_by_hour": [
+        { "hour": "00:00", "count": 3 },
+        { "hour": "01:00", "count": 1 },
+        ...
+      ],
+      "top_threat_users": [
+        { "username": "suspicious_user", "score": 75, "events": 15 }
+      ]
+    }
+
+  POST /api/threats/<event_id>/resolve
+    Позначення загрози як розглянутої адміністратором
+    { "resolution": "false_positive" | "confirmed" | "mitigated", "notes": str }
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.6. МОДУЛЬ АУДИТ-ЛОГУВАННЯ
+────────────────────────────────────────────────────────────────────────────────
+
+  Мета: Повний запис всіх дій у системі для аналізу та розслідування інцидентів.
+
+  4.6.1. Структура запису аудит-логу
+  ──────────────────────────────────
+
+  Поле              Тип          Опис
+  ────────────────   ──────────   ──────────────────────────────────────────
+  id                UUID         Унікальний ідентифікатор запису
+  timestamp         DATETIME     Час події (UTC)
+  user_id           UUID | NULL  ID користувача (NULL для анонімних дій)
+  username          VARCHAR      Ім'я користувача
+  action            VARCHAR      Тип дії (enum, див. нижче)
+  resource_type     VARCHAR      Тип ресурсу: "file", "user", "session"
+  resource_id       VARCHAR      ID ресурсу
+  ip_address        VARCHAR      IP-адреса клієнта
+  user_agent        TEXT         User-Agent заголовок
+  status            VARCHAR      "success" | "denied" | "error"
+  details           JSON         Додаткові дані (залежать від дії)
+
+  4.6.2. Типи дій (action)
+  ────────────────────────
+
+  Автентифікація:     LOGIN_SUCCESS, LOGIN_FAILED, LOGOUT, TOKEN_REFRESH,
+                      ACCOUNT_LOCKED, ACCOUNT_UNLOCKED
+  Файли:              FILE_UPLOADED, FILE_DOWNLOADED, FILE_DELETED,
+                      FILE_VISIBILITY_CHANGED
+  Цілісність:         INTEGRITY_CHECK, BULK_INTEGRITY_CHECK
+  Користувачі:        USER_REGISTERED, USER_ROLE_CHANGED, USER_BLOCKED,
+                      USER_UNBLOCKED, USER_DELETED
+  Безпека:            THREAT_DETECTED, THREAT_RESOLVED, RATE_LIMITED
+
+  4.6.3. API аудиту
+  ─────────────────
+
+  GET /api/audit?page=1&per_page=100&action=FILE_UPLOADED&user=john
+                 &status=success&from=2026-02-01&to=2026-02-13
+    Фільтри: action, user, status, resource_type, date range
+    Сортування: за timestamp (desc за замовчуванням)
+    Доступ: тільки admin
+
+  GET /api/audit/export?format=csv&from=2026-02-01&to=2026-02-13
+    Експорт логів у CSV файл
+    Доступ: тільки admin
+    Відповідь: файл audit_log_2026-02-01_2026-02-13.csv
+
+  4.6.4. Подвійне логування
+  ────────────────────────
+  Всі аудит-записи зберігаються одночасно у двох місцях:
+    1. SQLite — для швидкого пошуку та фільтрації через API
+    2. CloudWatch (LocalStack) — як імітація хмарного лог-сховища
+       Лог-група:  /shieldcloud/audit
+       Лог-потік:  {date}/events
+       Формат:     JSON (ідентичний структурі запису)
+
+
+────────────────────────────────────────────────────────────────────────────────
+4.7. МОДУЛЬ УПРАВЛІННЯ КОРИСТУВАЧАМИ
+────────────────────────────────────────────────────────────────────────────────
+
+  Доступ: тільки Admin
+
+  GET    /api/users                      Список всіх користувачів
+  GET    /api/users/<id>                 Деталі користувача
+  PATCH  /api/users/<id>/role            Зміна ролі { "role": "admin"|"user"|"guest" }
+  POST   /api/users/<id>/block           Блокування акаунту
+  POST   /api/users/<id>/unblock         Розблокування акаунту
+  DELETE /api/users/<id>                 Видалення акаунту (soft delete)
+
+  При зміні ролі: запис в аудит-лог "USER_ROLE_CHANGED" з деталями
+  { "old_role": "guest", "new_role": "user", "changed_by": "admin_username" }
+
+
+5. БАЗА ДАНИХ — СХЕМА
+================================================================================
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ users                                                          │
+  ├─────────────────────────────────────────────────────────────────┤
+  │ id               UUID         PRIMARY KEY                      │
+  │ username         VARCHAR(50)  UNIQUE NOT NULL                  │
+  │ email            VARCHAR(120) UNIQUE NOT NULL                  │
+  │ password_hash    VARCHAR(255) NOT NULL                         │
+  │ role             VARCHAR(20)  NOT NULL DEFAULT 'guest'         │
+  │                               CHECK(role IN ('admin','user','guest'))│
+  │ is_blocked       BOOLEAN      DEFAULT FALSE                    │
+  │ blocked_until    DATETIME     NULLABLE                         │
+  │ failed_logins    INTEGER      DEFAULT 0                        │
+  │ threat_score     INTEGER      DEFAULT 0                        │
+  │ last_login_at    DATETIME     NULLABLE                         │
+  │ last_login_ip    VARCHAR(45)  NULLABLE                         │
+  │ created_at       DATETIME     DEFAULT NOW()                    │
+  │ deleted_at       DATETIME     NULLABLE                         │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ file_metadata                                                  │
+  ├─────────────────────────────────────────────────────────────────┤
+  │ id                  UUID         PRIMARY KEY                   │
+  │ user_id             UUID         FK → users.id                 │
+  │ original_name       VARCHAR(255) NOT NULL                      │
+  │ s3_key              VARCHAR(500) NOT NULL                      │
+  │ s3_version_id       VARCHAR(100) NULLABLE                      │
+  │ encrypted_data_key  TEXT         NOT NULL (base64)             │
+  │ client_iv           VARCHAR(100) NOT NULL (base64)             │
+  │ sha256_hash         VARCHAR(64)  NOT NULL                      │
+  │ file_size           BIGINT       NOT NULL                      │
+  │ is_public           BOOLEAN      DEFAULT FALSE                 │
+  │ integrity_status    VARCHAR(20)  DEFAULT 'unchecked'           │
+  │                                  CHECK(IN ('unchecked','verified','compromised'))│
+  │ last_verified_at    DATETIME     NULLABLE                      │
+  │ created_at          DATETIME     DEFAULT NOW()                 │
+  │ updated_at          DATETIME     DEFAULT NOW()                 │
+  │ deleted_at          DATETIME     NULLABLE                      │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ audit_logs                                                     │
+  ├─────────────────────────────────────────────────────────────────┤
+  │ id               UUID         PRIMARY KEY                      │
+  │ timestamp        DATETIME     NOT NULL DEFAULT NOW()           │
+  │ user_id          UUID         NULLABLE FK → users.id           │
+  │ username         VARCHAR(50)  NULLABLE                         │
+  │ action           VARCHAR(50)  NOT NULL                         │
+  │ resource_type    VARCHAR(30)  NULLABLE                         │
+  │ resource_id      VARCHAR(100) NULLABLE                         │
+  │ ip_address       VARCHAR(45)  NOT NULL                         │
+  │ user_agent       TEXT         NULLABLE                         │
+  │ status           VARCHAR(20)  NOT NULL                         │
+  │                               CHECK(status IN ('success','denied','error'))│
+  │ details          JSON         NULLABLE                         │
+  └─────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │ threat_events                                                  │
+  ├─────────────────────────────────────────────────────────────────┤
+  │ id               UUID         PRIMARY KEY                      │
+  │ timestamp        DATETIME     NOT NULL DEFAULT NOW()           │
+  │ user_id          UUID         NULLABLE FK → users.id           │
+  │ threat_type      VARCHAR(50)  NOT NULL                         │
+  │ severity         VARCHAR(20)  NOT NULL                         │
+  │                               CHECK(IN ('low','medium','high','critical'))│
+  │ score_added      INTEGER      NOT NULL                         │
+  │ ip_address       VARCHAR(45)  NOT NULL                         │
+  │ description      TEXT         NOT NULL                         │
+  │ is_resolved      BOOLEAN      DEFAULT FALSE                    │
+  │ resolved_by      UUID         NULLABLE FK → users.id           │
+  │ resolution       VARCHAR(30)  NULLABLE                         │
+  │ resolution_notes TEXT         NULLABLE                         │
+  │ resolved_at      DATETIME     NULLABLE                         │
+  └─────────────────────────────────────────────────────────────────┘
+
+  Зв'язки:
+    file_metadata.user_id    → users.id (багато-до-одного)
+    audit_logs.user_id       → users.id (багато-до-одного)
+    threat_events.user_id    → users.id (багато-до-одного)
+    threat_events.resolved_by→ users.id (багато-до-одного)
+
+
+6. DOCKER COMPOSE КОНФІГУРАЦІЯ
+================================================================================
+
+  Файл: docker-compose.yml
+
+  services:
+
+    localstack:
+      image: localstack/localstack:3.0
+      ports:
+        - "4566:4566"
+      environment:
+        - SERVICES=s3,kms,logs
+        - DEFAULT_REGION=eu-central-1
+        - DOCKER_HOST=unix:///var/run/docker.sock
+      volumes:
+        - "./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh"
+        - "localstack_data:/var/lib/localstack"
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+    backend:
+      build: ./backend
+      ports:
+        - "5000:5000"
+      environment:
+        - FLASK_ENV=development
+        - SECRET_KEY=${SECRET_KEY:-super-secret-key-change-in-production}
+        - JWT_SECRET_KEY=${JWT_SECRET_KEY:-jwt-secret-key-change}
+        - AWS_ENDPOINT_URL=http://localstack:4566
+        - AWS_ACCESS_KEY_ID=test
+        - AWS_SECRET_ACCESS_KEY=test
+        - AWS_DEFAULT_REGION=eu-central-1
+        - S3_BUCKET_NAME=shieldcloud-files
+        - KMS_KEY_ALIAS=alias/shieldcloud-key
+        - DATABASE_URL=sqlite:///app.db
+        - CLOUDWATCH_LOG_GROUP=/shieldcloud/audit
+      volumes:
+        - "backend_data:/app/instance"
+      depends_on:
+        localstack:
+          condition: service_healthy
+
+    frontend:
+      build: ./frontend
+      ports:
+        - "3000:80"
+      depends_on:
+        - backend
+
+  volumes:
+    localstack_data:
+    backend_data:
+
+
+7. ЗМІННІ СЕРЕДОВИЩА (.env)
+================================================================================
+
+  # Безпека
+  SECRET_KEY=змінити-на-випадковий-рядок-мін-32-символи
+  JWT_SECRET_KEY=змінити-на-інший-випадковий-рядок
+
+  # AWS / LocalStack
+  AWS_ENDPOINT_URL=http://localstack:4566
+  AWS_ACCESS_KEY_ID=test
+  AWS_SECRET_ACCESS_KEY=test
+  AWS_DEFAULT_REGION=eu-central-1
+  S3_BUCKET_NAME=shieldcloud-files
+  KMS_KEY_ALIAS=alias/shieldcloud-key
+
+  # База даних
+  DATABASE_URL=sqlite:///app.db
+
+  # CloudWatch
+  CLOUDWATCH_LOG_GROUP=/shieldcloud/audit
+
+
+8. ІНІЦІАЛІЗАЦІЯ LOCALSTACK (init-aws.sh)
+================================================================================
+
+  #!/bin/bash
+  set -e
+
+  echo "Ініціалізація AWS-сервісів у LocalStack..."
+
+  # Створення S3 бакету
+  awslocal s3 mb s3://shieldcloud-files
+  awslocal s3api put-bucket-versioning \
+    --bucket shieldcloud-files \
+    --versioning-configuration Status=Enabled
+
+  # Створення KMS ключа
+  KEY_ID=$(awslocal kms create-key \
+    --description "Master key для шифрування файлів" \
+    --query 'KeyMetadata.KeyId' \
+    --output text)
+
+  awslocal kms create-alias \
+    --alias-name alias/shieldcloud-key \
+    --target-key-id $KEY_ID
+
+  # Створення CloudWatch лог-групи
+  awslocal logs create-log-group \
+    --log-group-name /shieldcloud/audit
+
+  awslocal logs create-log-stream \
+    --log-group-name /shieldcloud/audit \
+    --log-stream-name events
+
+  echo "Ініціалізація завершена!"
+  echo "  S3 бакет: shieldcloud-files (versioning enabled)"
+  echo "  KMS ключ: $KEY_ID (alias: alias/shieldcloud-key)"
+  echo "  CloudWatch: /shieldcloud/audit"
+
+
+9. API — ПОВНИЙ ПЕРЕЛІК ЕНДПОІНТІВ
+================================================================================
+
+  Метод    URL                              Ролі           Опис
+  ───────  ─────────────────────────────    ──────────────  ──────────────────────────
+  POST     /api/auth/register               *              Реєстрація
+  POST     /api/auth/login                  *              Вхід
+  POST     /api/auth/refresh                authenticated  Оновлення токена
+  POST     /api/auth/logout                 authenticated  Вихід
+
+  GET      /api/files                       admin,user,guest Список файлів
+  POST     /api/files/upload                admin,user     Завантаження файлу
+  GET      /api/files/<id>/download          admin,user,guest Скачування файлу
+  DELETE   /api/files/<id>                   admin,user     Видалення файлу
+  PATCH    /api/files/<id>/visibility        admin,user     Зміна публічності
+  POST     /api/files/<id>/verify            admin,user     Перевірка цілісності
+  POST     /api/files/verify-all             admin          Масова перевірка
+
+  GET      /api/audit                       admin          Аудит-логи (з фільтрами)
+  GET      /api/audit/export                admin          Експорт у CSV
+
+  GET      /api/threats                     admin          Список загроз
+  GET      /api/threats/stats               admin          Статистика загроз
+  POST     /api/threats/<id>/resolve         admin          Закриття загрози
+
+  GET      /api/users                       admin          Список користувачів
+  GET      /api/users/<id>                   admin          Деталі користувача
+  PATCH    /api/users/<id>/role              admin          Зміна ролі
+  POST     /api/users/<id>/block             admin          Блокування
+  POST     /api/users/<id>/unblock           admin          Розблокування
+  DELETE   /api/users/<id>                   admin          Видалення
+
+
+10. ФРОНТЕНД — СТОРІНКИ ТА КОМПОНЕНТИ
+================================================================================
+
+  10.1. Сторінка входу (LoginPage)
+  ────────────────────────────────
+  - Форма логіну (username + password)
+  - Форма реєстрації (username + email + password + підтвердження)
+  - Перемикання між формами
+  - Відображення помилок (невірний пароль, акаунт заблоковано)
+
+  10.2. Дашборд (DashboardPage)
+  ─────────────────────────────
+  - Карточки з ключовими метриками:
+    • Загальна кількість файлів
+    • Об'єм зайнятого сховища
+    • Активних користувачів за 24 год
+    • Загроз за 24 год
+  - Графік загроз за останні 7 днів (AreaChart)
+  - Графік активності за годинами (BarChart)
+  - Останні 10 подій аудиту (таблиця)
+  - Оцінка безпеки системи (SecurityScore — gauge-діаграма)
+
+  10.3. Файл-менеджер (FilesPage)
+  ───────────────────────────────
+  - Drag-and-drop зона для завантаження файлів
+  - Прогрес-бар шифрування та завантаження
+  - Таблиця файлів:
+    • Іконка типу файлу
+    • Ім'я файлу
+    • Розмір
+    • Власник
+    • Дата завантаження
+    • Статус цілісності (verified/unchecked/compromised — кольорова мітка)
+    • Публічний/приватний (перемикач)
+    • Дії: скачати, перевірити цілісність, видалити
+  - Кнопка "Перевірити всі" (тільки для admin)
+  - Фільтри: за ім'ям, статусом, власником
+
+  10.4. Аудит-логи (AuditPage)
+  ────────────────────────────
+  - Таблиця з пагінацією та сортуванням
+  - Фільтри: тип дії, користувач, статус, діапазон дат
+  - Деталі запису (розгортається при кліку)
+  - Кнопка експорту в CSV
+  - Тільки для admin
+
+  10.5. Моніторинг загроз (ThreatsPage)
+  ─────────────────────────────────────
+  - Графік загроз по severity за 7 днів (StackedBarChart)
+  - Кругова діаграма по типах загроз (PieChart)
+  - Топ-5 користувачів за threat_score
+  - Таблиця подій загроз з фільтрами
+  - Дія "Resolve" з вибором типу вирішення
+  - Тільки для admin
+
+  10.6. Управління користувачами (UsersPage)
+  ──────────────────────────────────────────
+  - Таблиця користувачів:
+    • Username, email, роль, статус, threat_score, остання активність
+  - Дії: змінити роль (dropdown), заблокувати/розблокувати, видалити
+  - Матриця прав (RoleMatrix) — візуальна таблиця з галочками
+  - Тільки для admin
+
+
+11. БЕЗПЕКА САМОЇ СИСТЕМИ
+================================================================================
+
+  11.1. Захист API
+  - JWT токени з коротким часом життя (15 хв)
+  - Refresh Token ротація (при кожному оновленні видається новий refresh)
+  - CORS обмежений до домену фронтенду
+  - Rate limiting: 60 запитів/хв для автентифікованих, 20 для анонімних
+  - Всі паролі хешуються bcrypt (salt rounds = 12)
+  - Input validation на кожному ендпоінті (marshmallow або pydantic)
+
+  11.2. Захист від атак
+  - SQL Injection: використання ORM (SQLAlchemy) з параметризованими запитами
+  - XSS: React автоматично екранує виведення
+  - CSRF: JWT в заголовку Authorization (не в cookies)
+  - File upload: обмеження розміру (50 МБ), перевірка MIME-типу
+  - Path traversal: UUID-based S3 ключі, без використання user input у шляхах
+
+
+12. ЗАПУСК ТА ВИКОРИСТАННЯ
+================================================================================
+
+  12.1. Вимоги
+  ───────────
+  - Docker 24+
+  - Docker Compose 2+
+  - 4 ГБ RAM (LocalStack потребує ~2 ГБ)
+  - 2 ГБ вільного місця на диску
+
+  12.2. Запуск
+  ───────────
+  git clone <repository>
+  cd shieldcloud
+  cp .env.example .env           # Відредагувати за потреби
+  docker-compose up --build      # Перший запуск ~3-5 хвилин
+
+  12.3. Доступ
+  ───────────
+  Frontend:    http://localhost:3000
+  Backend API: http://localhost:5000/api
+  LocalStack:  http://localhost:4566
+
+  12.4. Тестовий адміністратор
+  ───────────────────────────
+  При першому запуску автоматично створюється:
+  Username: admin
+  Password: Admin123!@#
+  Role:     admin
+
+  12.5. Зупинка
+  ─────────────
+  docker-compose down            # Зупинити контейнери
+  docker-compose down -v         # Зупинити + видалити дані
+
+
+================================================================================
+  КІНЕЦЬ СПЕЦИФІКАЦІЇ
+================================================================================
