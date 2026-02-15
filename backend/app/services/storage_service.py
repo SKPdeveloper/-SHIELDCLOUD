@@ -3,6 +3,7 @@
 Сервіс роботи з S3 сховищем
 """
 import uuid
+import base64
 from datetime import datetime
 from typing import Optional, Tuple, List
 
@@ -77,9 +78,10 @@ class StorageService:
             # Генеруємо S3 ключ
             s3_key = self.generate_s3_key(user.id, original_name)
 
-            # Метадані для S3
+            # Метадані для S3 (original-name кодуємо в base64 для підтримки Unicode)
+            encoded_name = base64.b64encode(original_name.encode('utf-8')).decode('ascii')
             s3_metadata = {
-                'original-name': original_name,
+                'original-name': encoded_name,
                 'client-iv': client_iv,
                 'upload-timestamp': datetime.utcnow().isoformat(),
                 'owner-id': user.id
